@@ -216,7 +216,7 @@ if audio_bytes and ("last_audio" not in st.session_state or st.session_state["la
         except Exception as e:
             st.error(f"Voice Engine Error: {e}")
 
-# Process Input Responses
+# Process Input Responses (Both typed and spoken text)
 if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -249,3 +249,39 @@ if user_input:
             search_query = clean_search
             
         live_news = search_the_internet(search_query)
+        context_addon += f"\n\n[Live Search Network Context]:\n{live_news}"
+
+    messages_payload = [system_prompt]
+    for msg in st.session_state.messages:
+        messages_payload.append({"role": msg["role"], "content": msg["content"]})
+        
+    full_user_content = f"{user_input}{context_addon}"
+    messages_payload.append({"role": "user", "content": full_user_content})
+    st.session_state.messages.append({"role": "user", "content": full_user_content})
+
+    with st.chat_message("assistant"):
+        response_placeholder = st.empty()
+        full_response = ""
+        
+        try:
+            completion = client.chat.completions.create(
+                model="llama-3.1-8b-instant", 
+                messages=messages_payload,
+                stream=True
+            )
+            
+            for chunk in completion:
+                if chunk.choices[0].delta.content:
+                    full_response += chunk.choices[0].delta.content
+                    clean_ui_render = full_response.split("\n\n[")
+                    response_placeholder.markdown(clean_ui_render[0] + "▌")
+            
+            final_clean_ui = full_response.split("\n\n[")
+            response_placeholder.markdown(final_clean_ui[0])
+            
+            st.session_state.messages.append({"role": "assistant", "content": final_clean_ui[0]})
+            speak_to_browser(final_clean_ui[0])
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Nova's thinking core encountered an error: {e}")
