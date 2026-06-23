@@ -6,51 +6,35 @@ import pytz
 import PyPDF2
 import re  
 import os
-import threading
 import time
 import asyncio
 import io  
 import edge_tts  
-import streamlit as st
-import base64
-# 🎤 Microphone recording library
 from audio_recorder_streamlit import audio_recorder
-
-# Initialize audio playback driver smoothly
-try:
-    import pygame
-    pygame.mixer.pre_init(44100, -16, 2, 2048)
-    pygame.mixer.init()
-except Exception:
-    pass
 
 # Set up the browser page title
 st.set_page_config(page_title="Nova AI", page_icon="🤖", layout="wide")
 st.title("🤖 Nova: My Personal AI Assistant")
 
+# --- 📌 STICKY CHAT INPUT PINNING WRAPPER ---
 st.markdown("""
     <style>
-        /* Target and anchor the exact horizontal container block row layout */
         div[data-testid="stHorizontalBlock"] {
             position: fixed !important;
             bottom: 20px !important;
-            left: 55% !important;
+            left: 58% !important;
             transform: translateX(-50%) !important;
-            width: 60% !important;
-            background-color: #0e1117 !important;
+            width: 55% !important;
+            background-color: #141821 !important;
             padding: 10px 20px !important;
             border-radius: 16px !important;
             border: 1px solid #262730 !important;
-            box-shadow: 0px -4px 20px rgba(0, 0, 0, 0.5) !important;
+            box-shadow: 0px -4px 25px rgba(0, 0, 0, 0.8) !important;
             z-index: 99999 !important;
         }
-        
-        /* Forces the main chat background scroll wrapper to yield clearance workspace */
-        .stChatElementContainer, .stChatMessageContainer {
-            margin-bottom: 110px !important;
+        .stChatElementContainer, .stChatMessageContainer, div[data-testid="stChatMessageContainer"] {
+            margin-bottom: 130px !important;
         }
-        
-        /* Adjust column vertical alignment to sit neatly on the baseline axis */
         div[data-testid="stColumn"] {
             display: flex !important;
             align-items: center !important;
@@ -59,56 +43,47 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Groq API client config
-api_key = "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"
-client = Groq(api_key=api_key)
+# Fetch API Keys securely from st.secrets
+try:
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+    SERP_API_KEY = st.secrets["SERP_API_KEY"]
+except Exception:
+    st.error("Please configure GROQ_API_KEY and SERP_API_KEY in your Streamlit Advanced Settings Secrets!")
+    st.stop()
 
-# 🎙️ HIGH-SPEED NATIVE IN-MEMORY AUDIO GENERATOR
-def speak_in_background(text):
-    def run_voice():
-        try:
-            clean_audio_text = re.sub(r'[^\x00-\x7F]+', '', text)
-            clean_audio_text = clean_audio_text.replace('*', '').replace('#', '').strip()
+# 🎙️ CLOUD-SAFE STABILIZED AUDIO STREAM GENERATOR
+def speak_to_browser(text):
+    try:
+        clean_audio_text = re.sub(r'[^\x00-\x7F]+', '', text)
+        clean_audio_text = clean_audio_text.replace('*', '').replace('#', '').strip()
+        
+        if clean_audio_text:
+            voice_model = "en-US-EmmaNeural"
             
-            if clean_audio_text:
-                voice_model = "en-US-EmmaNeural"
-                
-                async def generate_speech_stream():
-                    communicate = edge_tts.Communicate(clean_audio_text, voice_model)
-                    audio_data = b""
-                    async for chunk in communicate.stream():
-                        if chunk["type"] == "audio":
-                            audio_data += chunk["data"]
-                    return audio_data
-                
-                raw_bytes = asyncio.run(generate_speech_stream())
-                
-                if raw_bytes:
-                    audio_stream = io.BytesIO(raw_bytes)
-                    if pygame.mixer.music.get_busy():
-                        pygame.mixer.music.stop()
-                        pygame.mixer.music.unload()
-                    
-                    pygame.mixer.music.load(audio_stream)
-                    pygame.mixer.music.play()
-                    while pygame.mixer.music.get_busy():
-                        time.sleep(0.01)
-                    pygame.mixer.music.unload()
-        except Exception:
-            pass
+            async def generate_speech_stream():
+                communicate = edge_tts.Communicate(clean_audio_text, voice_model)
+                audio_data = b""
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_data += chunk["data"]
+                return audio_data
             
-    threading.Thread(target=run_voice, daemon=True).start()
+            raw_bytes = asyncio.run(generate_speech_stream())
+            if raw_bytes:
+                # Streams the generated voice audio file dynamically right inside the browser window
+                st.audio(raw_bytes, format="audio/mp3", autoplay=True)
+    except Exception:
+        pass
 
 # 🌐 STABLE NEWS SEARCH
 def search_the_internet(query):
     try:
-        serp_api_key = "fcddb822699fdd81fd526e0de6973885393bffaf3aee8cae3da38ef6a3e26ba2" 
         search = GoogleSearch({
             "q": query,
             "tbm": "nws",  
             "hl": "en",    
             "gl": "in",    
-            "api_key": serp_api_key
+            "api_key": SERP_API_KEY
         })
         results = search.get_dict().get("news_results", [])
         if not results:
@@ -130,44 +105,40 @@ current_year_month = current_time_obj.strftime("%B %Y")
 # Initialize messages bank early
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "full_document_text" not in st.session_state:
+    st.session_state.full_document_text = ""
 
 # 📂 SIDEBAR PANEL CONTROL
 with st.sidebar:
     st.header("📂 Document Processor")
     st.caption("Upload a PDF to let Nova read it.")
-    uploaded_file = st.file_uploader("Drag & Drop File Here", type=["pdf", "txt"])
+    uploaded_file = st.file_uploader("Drag & Drop File Here", type=["pdf", "txt"], key="pdf_uploader")
     
-    if "full_document_text" not in st.session_state:
-        st.session_state.full_document_text = ""
-        st.session_state.doc_loaded = False
-
-    if uploaded_file is not None and not st.session_state.doc_loaded:
+    if uploaded_file is not None and not st.session_state.full_document_text:
         try:
-            st.warning("Processing file... please wait.")
-            extracted_text = ""
-            if uploaded_file.type == "application/pdf":
-                pdf_reader = PyPDF2.PdfReader(uploaded_file)
-                num_pages = min(len(pdf_reader.pages), 500)
-                
-                for i in range(num_pages):
-                    page = pdf_reader.pages[i]
-                    text = page.extract_text()
-                    if text:
-                        extracted_text += text + "\n"
-            else:
-                extracted_text = uploaded_file.read().decode("utf-8")
-                
-            st.session_state.full_document_text = extracted_text
-            st.session_state.doc_loaded = True
-            st.success(f"✅ Document securely indexed into internal memory!")
+            with st.spinner("Processing file... please wait."):
+                extracted_text = ""
+                if uploaded_file.type == "application/pdf":
+                    pdf_reader = PyPDF2.PdfReader(uploaded_file)
+                    num_pages = min(len(pdf_reader.pages), 500)
+                    
+                    for i in range(num_pages):
+                        page = pdf_reader.pages[i]
+                        text = page.extract_text()
+                        if text:
+                            extracted_text += text + "\n"
+                else:
+                    extracted_text = uploaded_file.read().decode("utf-8")
+                    
+                st.session_state.full_document_text = extracted_text
+                st.success(f"✅ Document securely indexed into internal memory!")
         except Exception as e:
             st.error(f"Error reading file: {e}")
             
     if uploaded_file is None:
         st.session_state.full_document_text = ""
-        st.session_state.doc_loaded = False
 
-    # 🧹 Workspace Cleaner Button
+    # 🧹 WORKSPACE CLEANER STATE SWEEPER BUTTON
     st.markdown("---")
     st.subheader("🧹 Workspace Cleaner")
     st.caption("Instantly erase current active states.")
@@ -175,7 +146,6 @@ with st.sidebar:
     if st.button("Clear Chat History", use_container_width=True, type="primary"):
         st.session_state.messages = []
         st.session_state.full_document_text = ""
-        st.session_state.doc_loaded = False
         st.success("Chat logs safely wiped!")
         time.sleep(0.5)
         st.rerun()
@@ -221,7 +191,7 @@ for message in st.session_state.messages:
         clean_display = raw_text.split("\n\n[")[0]
         st.markdown(clean_display)
 
-# --- 🎤 MICROPHONE INPUT INTERFACE ---
+# --- 🎤 MICROPHONE INPUT INTERFACE CONTAINER ---
 st.markdown("---")
 col1, col2 = st.columns([0.90, 0.10], vertical_alignment="bottom")
 
@@ -229,10 +199,8 @@ with col1:
     user_input = st.chat_input("Ask Nova anything...")
 
 with col2:
-    # Places a beautifully rendered, clickable microphone icon next to your chatbox
     audio_bytes = audio_recorder(text="", recording_color="#e74c3c", neutral_color="#95a5a6", icon_size="2x")
 
-# Handle Voice Transcription using Groq's high-speed Whisper engine
 if audio_bytes and ("last_audio" not in st.session_state or st.session_state["last_audio"] != audio_bytes):
     st.session_state["last_audio"] = audio_bytes
     with st.spinner("Transcribing voice query..."):
@@ -248,8 +216,7 @@ if audio_bytes and ("last_audio" not in st.session_state or st.session_state["la
         except Exception as e:
             st.error(f"Voice Engine Error: {e}")
 
-# Process Input Responses (Both typed and spoken text)
-# Process Input Responses (Both typed and spoken text)
+# Process Input Responses
 if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -257,7 +224,6 @@ if user_input:
     cleaned_input = user_input.replace('"', '').replace("'", "").lower().strip()
     context_addon = ""
     
-    # 1. Dynamic Chunk-Matching Logic
     if st.session_state.full_document_text:
         keywords = [w for w in cleaned_input.split() if len(w) > 4]
         matched_paragraphs = []
@@ -270,11 +236,9 @@ if user_input:
         relevant_context = "\n".join(matched_paragraphs) if matched_paragraphs else st.session_state.full_document_text[:2000]
         context_addon += f"\n\n[Relevant Document Snippet]:\n{relevant_context}"
     
-    # 2. Check for Time/Date (Changed to independent 'if' for smooth processing fallback)
     if any(w in cleaned_input for w in ["time", "date", "clock"]):
         context_addon += f"\n\n[System Time]: {local_time}"
         
-    # 3. Smart Triggers for news searching (Changed to independent 'if' to unlock text inputs)
     if any(w in cleaned_input for w in ["news", "search", "latest", "who is", "crypto", "price", "today", "india", "world", "global", "weather", "bengal", "suti"]):
         with st.chat_message("assistant"):
             st.caption("🔍 *Checking live information networks...*")
@@ -285,41 +249,3 @@ if user_input:
             search_query = clean_search
             
         live_news = search_the_internet(search_query)
-        context_addon += f"\n\n[Live Search Network Context]:\n{live_news}"
-
-    # Build history layout payload safely
-    messages_payload = [system_prompt]
-    for msg in st.session_state.messages:
-        messages_payload.append({"role": msg["role"], "content": msg["content"]})
-        
-    full_user_content = f"{user_input}{context_addon}"
-    messages_payload.append({"role": "user", "content": full_user_content})
-    st.session_state.messages.append({"role": "user", "content": full_user_content})
-
-    # Call Groq API and stream response
-    with st.chat_message("assistant"):
-        response_placeholder = st.empty()
-        full_response = ""
-        
-        try:
-            completion = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=messages_payload,
-                stream=True
-            )
-            
-            for chunk in completion:
-                if chunk.choices[0].delta.content:
-                    full_response += chunk.choices[0].delta.content
-                    clean_ui_render = full_response.split("\n\n[")[0]
-                    response_placeholder.markdown(clean_ui_render + "▌")
-            
-            final_clean_ui = full_response.split("\n\n[")[0]
-            response_placeholder.markdown(final_clean_ui)
-            
-            st.session_state.messages.append({"role": "assistant", "content": final_clean_ui})
-            speak_in_background(final_clean_ui)
-            st.rerun()
-            
-        except Exception as e:
-            st.error(f"Nova's thinking core encountered an error: {e}")
