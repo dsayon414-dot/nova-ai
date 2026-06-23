@@ -51,7 +51,7 @@ except Exception:
     st.error("Please configure GROQ_API_KEY and SERP_API_KEY in your Streamlit Advanced Settings Secrets!")
     st.stop()
 
-# 🎙️ CLOUD-SAFE VOICE GENERATOR
+# 🎙️ CLOUD-SAFE STABILIZED AUDIO STREAM GENERATOR
 def speak_to_browser(text):
     try:
         clean_audio_text = re.sub(r'[^\x00-\x7F]+', '', text)
@@ -70,6 +70,7 @@ def speak_to_browser(text):
             
             raw_bytes = asyncio.run(generate_speech_stream())
             if raw_bytes:
+                # Streams the generated voice audio file dynamically right inside the browser window
                 st.audio(raw_bytes, format="audio/mp3", autoplay=True)
     except Exception:
         pass
@@ -106,8 +107,6 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "full_document_text" not in st.session_state:
     st.session_state.full_document_text = ""
-if "voice_queue" not in st.session_state:
-    st.session_state.voice_queue = None
 
 # 📂 SIDEBAR PANEL CONTROL
 with st.sidebar:
@@ -139,7 +138,7 @@ with st.sidebar:
     if uploaded_file is None:
         st.session_state.full_document_text = ""
 
-    # 🧹 WORKSPACE CLEANER
+    # 🧹 WORKSPACE CLEANER STATE SWEEPER BUTTON
     st.markdown("---")
     st.subheader("🧹 Workspace Cleaner")
     st.caption("Instantly erase current active states.")
@@ -147,7 +146,6 @@ with st.sidebar:
     if st.button("Clear Chat History", use_container_width=True, type="primary"):
         st.session_state.messages = []
         st.session_state.full_document_text = ""
-        st.session_state.voice_queue = None
         st.success("Chat logs safely wiped!")
         time.sleep(0.5)
         st.rerun()
@@ -162,7 +160,7 @@ with st.sidebar:
         
         for msg in st.session_state.messages:
             if msg["role"] != "system":
-                clean_text_segment = str(msg["content"]).split("\n\n[")
+                clean_text_segment = str(msg["content"]).split("\n\n[")[0]
                 speaker_tag = "SAYON (USER)" if msg["role"] == "user" else "NOVA (ASSISTANT)"
                 chat_export_string += f"[{speaker_tag}]: {clean_text_segment}\n\n"
         
@@ -186,19 +184,14 @@ system_prompt = {
     )
 }
 
-# Display older messages cleanly + Play the freshest audio message on rerun
+# Display older messages cleanly
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         raw_text = str(message["content"])
-        clean_display = raw_text.split("\n\n[")
+        clean_display = raw_text.split("\n\n[")[0]
         st.markdown(clean_display)
 
-# If a fresh answer was just added to session history, play it here!
-if st.session_state.voice_queue:
-    speak_to_browser(st.session_state.voice_queue)
-    st.session_state.voice_queue = None  # Reset queue so it doesn't loop forever
-
-# --- 🎤 MICROPHONE INPUT INTERFACE ---
+# --- 🎤 MICROPHONE INPUT INTERFACE CONTAINER ---
 st.markdown("---")
 col1, col2 = st.columns([0.90, 0.10], vertical_alignment="bottom")
 
@@ -250,3 +243,45 @@ if user_input:
         with st.chat_message("assistant"):
             st.caption("🔍 *Checking live information networks...*")
         clean_search = cleaned_input.replace("followed by", "").replace('"', '').replace('?', '')
+        if len(clean_search.split()) <= 3 and any(k in clean_search for k in ["india", "news"]):
+            search_query = f"{clean_search} {current_year_month}"
+        else:
+            search_query = clean_search
+            
+        live_news = search_the_internet(search_query)
+        context_addon += f"\n\n[Live Search Network Context]:\n{live_news}"
+
+    messages_payload = [system_prompt]
+    for msg in st.session_state.messages:
+        messages_payload.append({"role": msg["role"], "content": msg["content"]})
+        
+    full_user_content = f"{user_input}{context_addon}"
+    messages_payload.append({"role": "user", "content": full_user_content})
+    st.session_state.messages.append({"role": "user", "content": full_user_content})
+
+    with st.chat_message("assistant"):
+        response_placeholder = st.empty()
+        full_response = ""
+        
+        try:
+            completion = client.chat.completions.create(
+                model="llama-3.1-8b-instant", 
+                messages=messages_payload,
+                stream=True
+            )
+            
+            for chunk in completion:
+                if chunk.choices[0].delta.content:
+                    full_response += chunk.choices[0].delta.content
+                    clean_ui_render = full_response.split("\n\n[")
+                    response_placeholder.markdown(clean_ui_render[0] + "▌")
+            
+            final_clean_ui = full_response.split("\n\n[")
+            response_placeholder.markdown(final_clean_ui[0])
+            
+            st.session_state.messages.append({"role": "assistant", "content": final_clean_ui[0]})
+            speak_to_browser(final_clean_ui[0])
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Nova's thinking core encountered an error: {e}")
